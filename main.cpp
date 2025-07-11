@@ -1,27 +1,16 @@
 #include <iostream>
 #include "AudioProcessing.h"
+#include "NoiseSuppression.h"
 #include <complex>
 
 
-uint32_t nearestPowerOfTwo(uint32_t x)
-{
-    if (x == 0) return 0;
-    --x;
-
-    x |= x >> 1;
-    x |= x >> 2;
-    x |= x >> 4;
-    x |= x >> 8;
-    x |= x >> 16;
-    return x+1;
-}
 
 int main()
 {
     AudioProcessing audioProcesser;
 
     uint32_t sampleRate;
-    auto samples = audioProcesser.loadWav(R"(C:\Users\prana\Downloads\Test.wav)", sampleRate);
+    auto samples = audioProcesser.loadWav(R"(C:\Users\prana\Downloads\Test3JG.wav)", sampleRate);
 
     std::vector<double> window = audioProcesser.generateWindow(512);
 
@@ -30,15 +19,22 @@ int main()
     size_t padded_size = frames[0].size();
     std::vector<double> output(samples.size(), 0.0);
 
+    std::vector<double> noise = NoiseSuppression().generateAverageNoise(frames, 150, 512);
+
     for (size_t i = 0; i < frames.size(); ++i)
     {
         auto& frame = frames[i];
 
         audioProcesser.FFT(frame, false);
+        double freqBinWidth = sampleRate / frame.size();
 
-        //TODO Do spectral noise subtraction here.
+
+
+        NoiseSuppression().subtractSpectralNoise(frame, noise, freqBinWidth);
+
 
         audioProcesser.FFT(frame, true);
+
 
         for (int j = 0; j < 512; ++j)
         {
@@ -46,7 +42,12 @@ int main()
         }
     }
 
-    audioProcesser.saveWav(R"(C:\Users\prana\Downloads\Output.wav)", output, sampleRate);
+    output.resize(output.size()/2);
+
+    for (auto& sample : output)
+        sample *= 1.5;
+
+    audioProcesser.saveWav(R"(C:\Users\prana\Downloads\Output10.wav)", output, sampleRate);
 
 
 
