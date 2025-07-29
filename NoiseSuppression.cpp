@@ -20,9 +20,10 @@ std::vector<double> NoiseSuppression::generateAverageNoise(
         }
     }
 
+
     for (int k = 0; k < frame_size; ++k)
     {
-        noiseFrames[k] /= 70.0;
+        noiseFrames[k] /= 40;
     }
 
     return noiseFrames;

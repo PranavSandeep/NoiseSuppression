@@ -10,16 +10,20 @@ int main()
     AudioProcessing audioProcesser;
 
     uint32_t sampleRate;
-    auto samples = audioProcesser.loadWav(R"(C:\Users\prana\Downloads\Test3JG.wav)", sampleRate);
+    auto samples = audioProcesser.loadWav(R"(audioPath.wav)", sampleRate);
+    auto Airnoise = audioProcesser.loadWav(R"(noisePath.wav)", sampleRate);
 
     std::vector<double> window = audioProcesser.generateWindow(512);
 
+
+
     auto frames = audioProcesser.generateFrames(samples, window, 512, 256);
+    auto noiseFrames = audioProcesser.generateFrames(Airnoise, window, 512, 256);
 
     size_t padded_size = frames[0].size();
     std::vector<double> output(samples.size(), 0.0);
 
-    std::vector<double> noise = NoiseSuppression().generateAverageNoise(frames, 150, 512);
+    std::vector<double> noise = NoiseSuppression().generateAverageNoise(noiseFrames, 150, 512);
 
     for (size_t i = 0; i < frames.size(); ++i)
     {
@@ -47,7 +51,7 @@ int main()
     for (auto& sample : output)
         sample *= 1.5;
 
-    audioProcesser.saveWav(R"(C:\Users\prana\Downloads\Output10.wav)", output, sampleRate);
+    audioProcesser.saveWav(R"(Output.wav)", output, sampleRate);
 
 
 

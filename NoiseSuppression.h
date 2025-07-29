@@ -13,6 +13,8 @@ public:
     std::vector<double> generateAverageNoise(std::vector<std::vector<std::complex<double> > > &frames,
                                              int initialFrames, int frame_size);
 
+
+
     void subtractSpectralNoise(std::vector<std::complex<double> > &frames, std::vector<double> &spectralNoise, double freqBinWidth);
 
 };
