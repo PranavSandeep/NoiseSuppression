@@ -2,10 +2,14 @@
 // Created by prana on 07-07-2025.
 //
 #define DR_WAV_IMPLEMENTATION
+#define _USE_MATH_DEFINES
 #include "AudioProcessing.h"
 
 #include <cmath>
 #include <complex>
+
+
+
 
 
 std::vector<double> AudioProcessing::loadWav(const char *filename, uint32_t &sampleRate)
@@ -125,7 +129,9 @@ void AudioProcessing::FFT(std::vector<std::complex<double>> &frame, bool invert)
     std::complex<double> w;
     w = 1.0;
 
-    std::complex<double> wn = std::polar(1.0, -2*M_PI*(invert ? -1 : 1)/size);
+    double angle = 2 * M_PI / size;
+    if (invert) angle = -angle;
+    std::complex<double> wn = std::polar(1.0, angle);
     for (int i = 0; i < size/2; i++)
     {
         frame[i] = even[i] + w * odd[i];

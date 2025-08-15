@@ -7,3 +7,4 @@ Model/output.wav
 Model/NoiseSupp.h5
 Model/__pycache__/encoding.cpython-36.pyc
 Model/Test.py
+onnxruntime/
