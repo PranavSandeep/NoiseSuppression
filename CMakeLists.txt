@@ -26,6 +26,7 @@ add_executable(NoiseSuppression main.cpp
         AudioInput.h
         Model.cpp
         Model.h
+        AppConfig.hpp
 )
 target_include_directories(NoiseSuppression PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 

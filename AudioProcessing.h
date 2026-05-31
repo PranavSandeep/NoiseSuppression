@@ -6,6 +6,8 @@
 #ifndef AUDIOPROCESSING_H
 #define AUDIOPROCESSING_H
 
+#pragma once
+
 #include <complex>
 #include <iostream>
 #include <ostream>

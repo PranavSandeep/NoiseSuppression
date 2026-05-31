@@ -1,118 +1,200 @@
 //
 // Created by prana on 29-07-2025.
 //
-#define MINIAUDIO_IMPLEMENTATION
+
 
 #include "AudioInput.h"
 
-#include <chrono>
 #include "AudioProcessing.h"
-#include "Model.h"
-#include <deque>
 
-std::vector<float> inputBuffer;
-std::vector<float> outputBuffer;
-std::vector<double> window = AudioProcessing().generateWindow(512);
-int FRAME_SIZE = 512;
-int HOP_SIZE = 256;
-size_t writeIndex = 0;
-std::vector<float> phase;
 
-auto model = Model(L"model-QuickRCED.onnx");
+#include "concurrentqueue.h"
+#include "librosa/librosa.h"
 
-int frame_c = 0;
+#include <atomic>
+#include <chrono>
+#include <thread>
+#include <vector>
 
-std::vector<float> buffer(257*251, 0);
+constexpr int FRAME_SIZE  = 512;
+constexpr int HOP_SIZE    = 256;
+constexpr int MODEL_INPUT = 1024;
 
-void AudioInput::data_callback(ma_device *device, void *output, const void *input, ma_uint32 frame_count)
+std::vector<double> window = AudioProcessing().generateWindow(MODEL_INPUT);
+
+std::vector<float> in(FRAME_SIZE);
+std::vector<float> out(FRAME_SIZE);
+
+moodycamel::ConcurrentQueue<std::vector<float>> outputQueue;
+moodycamel::ConcurrentQueue<std::vector<float>> inputQueue;
+
+
+
+std::atomic<bool> AudioInput::running = true;
+
+
+
+bool playbackStarted = false;
+
+void AudioInput::data_callback(
+    ma_device* device,
+    void* output,
+    const void* input,
+    ma_uint32 frame_count)
+{
+    std::memcpy(
+        in.data(),
+        input,
+        frame_count *
+        ma_get_bytes_per_frame(
+            device->capture.format,
+            device->capture.channels));
+
+    inputQueue.enqueue(in);
+
+    if (outputQueue.size_approx() > 0 || playbackStarted)
+    {
+        playbackStarted = true;
+
+        if (outputQueue.try_dequeue(out))
+        {
+            std::memcpy(
+                output,
+                out.data(),
+                frame_count *
+                ma_get_bytes_per_frame(
+                    device->playback.format,
+                    device->playback.channels));
+        }
+
+
+    }
+}
+
+void AudioInput::proccessAudio()
 {
 
-    auto start = std::chrono::high_resolution_clock::now();
-    const float* in = (const float*)input;
-    float* out = (float*)output;
+    constexpr int CHUNK   = 512;   // receive 512 at a time
+    constexpr int MODEL_INPUT = 1024;
+    constexpr int FFT     = 512;
+    constexpr int HOP     = 256;
+
+    std::vector<float> contextBuffer(MODEL_INPUT * 2, 0.0f);
+    std::vector<float> accumBuffer;
+    accumBuffer.reserve(MODEL_INPUT);
 
 
-    inputBuffer.insert(inputBuffer.end(), in, in + frame_count);
-    AudioProcessing audio_processor;
-    while (inputBuffer.size() >= FRAME_SIZE)
+
+    std::vector<float> ola_buffer(MODEL_INPUT * 2, 0.0f);
+
+    //Take larger context, and save history to try and fix the crackle. Gave some success.
+    Eigen::MatrixXcf stftHistory = Eigen::MatrixXcf::Zero(257, 9);
+    while (running.load(std::memory_order_relaxed))
     {
+        std::vector<float> chunk512;
 
-
-        std::vector<std::complex<double>> frame(FRAME_SIZE);
-
-        //Apply window
-        for (int i = 0; i < FRAME_SIZE; i++)
-            frame[i] = inputBuffer[i] * window[i];
-
-
-
-
-
-        audio_processor.FFT(frame, false);
-
-        buffer.erase(buffer.begin(), buffer.begin() + FRAME_SIZE);
-        for (auto i : frame)
+        if (!inputQueue.try_dequeue(chunk512))
         {
-            buffer.push_back(std::abs(i));
-            phase.push_back(std::arg(i));
+            std::this_thread::yield();
+            continue;
         }
 
-        frame_c++;
-        if(frame_c >=64)
-        {
-            auto start1 = std::chrono::high_resolution_clock::now();
-            model.predict(buffer);
-            auto end1 = std::chrono::high_resolution_clock::now();
-            auto duration1 = std::chrono::duration_cast<std::chrono::microseconds>(end1 - start1);
-            //std::cout << duration1.count() << " microseconds\n";
+        if (chunk512.size() != (size_t)CHUNK)
+            continue;
 
-            frame_c = 0;
+
+        accumBuffer.insert(
+            accumBuffer.end(),
+            chunk512.begin(),
+            chunk512.end());
+
+        if (accumBuffer.size() < (size_t)MODEL_INPUT)
+            continue;
+
+
+        std::memmove(
+            contextBuffer.data(),
+            contextBuffer.data() + MODEL_INPUT,
+            MODEL_INPUT * sizeof(float));
+
+        std::memcpy(
+            contextBuffer.data() + MODEL_INPUT,
+            accumBuffer.data(),
+            MODEL_INPUT * sizeof(float));
+
+        accumBuffer.clear();
+
+
+        auto STFT = librosa::Feature::stft(
+            contextBuffer, FFT, HOP, "hann", true, "constant");
+
+        auto STFT_Matrix = librosa::internal::toEigen(STFT);
+        Eigen::MatrixXcf S = STFT_Matrix.transpose();
+
+
+        int halfCols = S.cols() / 2 + 1;
+        Eigen::MatrixXcf S_curr = S.rightCols(halfCols);
+
+        Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> mag
+            = S_curr.cwiseAbs();
+        Eigen::ArrayXXcf phase
+            = S_curr.array() / (S_curr.array().abs() + 1e-8f);
+
+
+        Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> output;
+        md->fast_predict(mag.data(), mag.size(), output);
+
+        const float current_threshold = noiseThreshold.load(std::memory_order_relaxed);
+        const float current_attentuation = floorAttenuation.load(std::memory_order_relaxed);
+
+
+        output = output.unaryExpr([current_threshold, current_attentuation](float maskValue) {
+
+            if (maskValue < current_threshold) {
+                return maskValue * current_attentuation;
+            }
+            return maskValue;
+        });
+
+        Eigen::MatrixXcf S_reconstructed = output.array() * phase;
+
+        stftHistory.leftCols(halfCols) = stftHistory.rightCols(halfCols).eval();
+
+        stftHistory.rightCols(halfCols) = S_reconstructed;
+
+        std::vector<float> reconstructed = librosa::Feature::istft(
+            stftHistory, FFT, HOP, "hann", true, "constant");
+
+
+        //OLA
+
+        for (int  i = 0; i < reconstructed.size(); i++)
+        {
+            ola_buffer[i] += reconstructed[i];
         }
 
-        audio_processor.FFT(frame, true);
+
+        outputQueue.enqueue(std::vector<float>(
+            ola_buffer.begin(),
+            ola_buffer.begin() + CHUNK));
+
+        outputQueue.enqueue(std::vector<float>(
+            ola_buffer.begin() + CHUNK,
+            ola_buffer.begin() + MODEL_INPUT));
 
 
-        //Overlap add
-        for (int i = 0; i < FRAME_SIZE; i++)
-        {
-            double val = frame[i].real() * window[i];
-            size_t  outIndex = writeIndex + i;
-            if (outputBuffer.size()  <= outIndex)
-                outputBuffer.resize(outIndex + 1, 0.f);
-            outputBuffer[outIndex] += static_cast<float>(val);
-        }
-        writeIndex += HOP_SIZE;
 
-        inputBuffer.erase(inputBuffer.begin(), inputBuffer.begin() + HOP_SIZE);
+        std::memmove(
+            ola_buffer.data(),
+            ola_buffer.data() + MODEL_INPUT,
+            MODEL_INPUT * sizeof(float)
+
+            );
+
+        std::fill(ola_buffer.begin() + MODEL_INPUT, ola_buffer.end(), 0.0f);
+
 
     }
-
-    if (outputBuffer.size() >= frame_count) {
-        for (uint32_t i = 0; i < frame_count; ++i) {
-            out[i] = outputBuffer[i];
-        }
-
-    } else {
-        for (uint32_t i = 0; i < frame_count; ++i)
-            out[i] = 0.0f;
-    }
-
-
-    //Remove written bins from output buffer
-    if (outputBuffer.size() >= frame_count)
-        outputBuffer.erase(outputBuffer.begin(), outputBuffer.begin() + frame_count);
-
-    if (writeIndex >= frame_count)
-        writeIndex -= frame_count;
-    else
-        writeIndex = 0;
-
-
-
-    auto end = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-    // std::cout << duration.count() << " microseconds\n";
-
-
 }
+
 
